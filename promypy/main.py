@@ -33,10 +33,12 @@ def write_to_file(file: Optional[str], filenames: Set[str]) -> None:
         fh = stack.enter_context(open(file, "w")) if file else sys.stdout
         echo(output_filenames, file=fh)
 
+def call_mypy_api(args: list[str]):
+    return args[0], api.run([*args])
 
 @app.command()
 def dump(
-    directory: str = ".",
+    directory: str = '.',
     mypy_args: Optional[str] = None,
     timeout: int = 10,
     exclude: Optional[List[str]] = None,
@@ -46,6 +48,7 @@ def dump(
     exclude = exclude or []
     filenames: List[str] = []
     bad_filenames: Set[str] = set()
+    processedFiles = set()
     args = shlex.split(mypy_args or "")
     if directory == ".":
         directory = os.getcwd()  # pragma: no cover
@@ -66,22 +69,23 @@ def dump(
         task = progress.add_task("Running mypy...", total=total)
 
         futures = [
-            pool.submit(api.run, timeout=timeout, args=[filename, *args])
+            pool.submit(call_mypy_api, timeout=timeout, args=[filename, *args])
             for filename in filenames
         ]
-
-        for filename, future in zip(filenames, as_completed(futures)):
-            include_filename = True
+        for future in as_completed(futures):
             try:
-                _, _, exit_code = future.result()
+                filename, api_result = future.result()
+                _, _, exit_code = api_result
                 include_filename = bool(exit_code)
+                processedFiles.add(filename)
             except TimeoutError:  # pragma: no cover
-                progress.console.print("TimeoutError: ", filename)
+                progress.console.print("TimeoutError")
             except Exception as e:  # pragma: no cover
                 progress.console.print("Exception: ", e)
             if include_filename:
                 bad_filenames.add(filename)
             progress.advance(task)
+        echo(f'Exception files : {set(filenames) - processedFiles}')
 
     write_to_file(output, bad_filenames)
 
@@ -91,6 +95,7 @@ def check(
     files: List[str],
     ignore_file: Path = typer.Option(..., "--ignore-file", "-f"),
     mypy_args: Optional[str] = None,
+    timeout: Optional[int] = 20
 ) -> None:
     """Check the given files with mypy, applying a set of custom rules.
 
@@ -100,23 +105,46 @@ def check(
     - If a file is not in the list, and is fully annotated, it will be ignored.
     - If a file is not in the list, and is not fully annotated, it will raise errors.
     """
+    args = shlex.split(mypy_args or "")
     with ignore_file.open("r") as file:
         all_ignored_files = {line.strip() for line in file.readlines()}
     files_to_ignore = set(files) & all_ignored_files
 
     files_with_error = set()
-    args = shlex.split(mypy_args or "")
-    result, _, exit_code = api.run(files + args)
+    processedFiles = set()
 
-    output = []
-    if exit_code != 0:
-        for line in result.split("\n"):
-            match = re.match(FILE_PATTERN, line)
-            if ":" in line and match:
-                filename = match.group(1)
-                files_with_error.add(filename)
-                if filename not in files_to_ignore:
-                    output.append(line)
+    with Progress(
+            *Progress.get_default_columns(),
+            TimeElapsedColumn(),
+            MofNCompleteColumn(),
+    ) as progress, ProcessPool() as pool:
+        total = len(files)
+        task = progress.add_task("Checking mypy on files...", total=total)
+        futures = [
+            pool.submit(call_mypy_api, args=[filename,*args], timeout=timeout)
+            for filename in files
+        ]
+
+        output = []
+        for future in as_completed(futures):
+            try:
+                filename, api_result = future.result()
+                result, _, exit_code = api_result
+                processedFiles.add(filename)
+                if exit_code != 0:
+                    for line in result.split("\n"):
+                        match = re.match(FILE_PATTERN, line)
+                        if ":" in line and match:
+                            filename = match.group(1)
+                            files_with_error.add(filename)
+                            if filename not in files_to_ignore:
+                                output.append(line)
+            except TimeoutError:  # pragma: no cover
+                progress.console.print("TimeoutError")
+            except Exception as e:  # pragma: no cover
+                progress.console.print("Exception: ", e)
+            progress.advance(task)
+        echo(f'Exception files : {set(files) - processedFiles}')
 
     files_to_remove = files_to_ignore - files_with_error
     ignored_files = all_ignored_files - files_to_remove

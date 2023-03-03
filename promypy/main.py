@@ -6,7 +6,7 @@ from concurrent.futures import TimeoutError, as_completed
 from contextlib import ExitStack
 from glob import glob
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Any, List, Optional, Set, Tuple
 
 import typer
 from mypy import api
@@ -33,14 +33,16 @@ def write_to_file(file: Optional[str], filenames: Set[str]) -> None:
         fh = stack.enter_context(open(file, "w")) if file else sys.stdout
         echo(output_filenames, file=fh)
 
-def call_mypy_api(args: list[str]):
+
+def call_mypy_api(args: list[str]) -> Tuple[str, Any]:
     return args[0], api.run([*args])
+
 
 @app.command()
 def dump(
-    directory: str = '.',
+    directory: str = ".",
     mypy_args: Optional[str] = None,
-    timeout: int = 10,
+    timeout: int = 30,
     exclude: Optional[List[str]] = None,
     output: Optional[str] = None,
 ) -> None:
@@ -80,12 +82,15 @@ def dump(
                 processedFiles.add(filename)
             except TimeoutError:  # pragma: no cover
                 progress.console.print("TimeoutError")
+                include_filename = True
             except Exception as e:  # pragma: no cover
                 progress.console.print("Exception: ", e)
             if include_filename:
                 bad_filenames.add(filename)
             progress.advance(task)
-        echo(f'Exception files : {set(filenames) - processedFiles}')
+        files_resulted_in_exception = set(filenames) - processedFiles
+        if files_resulted_in_exception:
+            echo(f"Exception files : {set(filenames) - processedFiles}")
 
     write_to_file(output, bad_filenames)
 
@@ -95,7 +100,7 @@ def check(
     files: List[str],
     ignore_file: Path = typer.Option(..., "--ignore-file", "-f"),
     mypy_args: Optional[str] = None,
-    timeout: Optional[int] = 20
+    timeout: Optional[int] = 20,
 ) -> None:
     """Check the given files with mypy, applying a set of custom rules.
 
@@ -114,14 +119,14 @@ def check(
     processedFiles = set()
 
     with Progress(
-            *Progress.get_default_columns(),
-            TimeElapsedColumn(),
-            MofNCompleteColumn(),
+        *Progress.get_default_columns(),
+        TimeElapsedColumn(),
+        MofNCompleteColumn(),
     ) as progress, ProcessPool() as pool:
         total = len(files)
         task = progress.add_task("Checking mypy on files...", total=total)
         futures = [
-            pool.submit(call_mypy_api, args=[filename,*args], timeout=timeout)
+            pool.submit(call_mypy_api, args=[filename, *args], timeout=timeout)
             for filename in files
         ]
 
@@ -144,7 +149,9 @@ def check(
             except Exception as e:  # pragma: no cover
                 progress.console.print("Exception: ", e)
             progress.advance(task)
-        echo(f'Exception files : {set(files) - processedFiles}')
+        files_resulted_in_exception = set(files) - processedFiles
+        if files_resulted_in_exception:
+            echo(f"Exception files : {set(files) - processedFiles}")
 
     files_to_remove = files_to_ignore - files_with_error
     ignored_files = all_ignored_files - files_to_remove

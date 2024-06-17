@@ -100,7 +100,7 @@ def check(
     files: List[str],
     ignore_file: Path = typer.Option(..., "--ignore-file", "-f"),
     mypy_args: Optional[str] = None,
-    timeout: Optional[int] = 20,
+    timeout: Optional[int] = 40,
 ) -> None:
     """Check the given files with mypy, applying a set of custom rules.
 
@@ -110,6 +110,7 @@ def check(
     - If a file is not in the list, and is fully annotated, it will be ignored.
     - If a file is not in the list, and is not fully annotated, it will raise errors.
     """
+    print("Inside check")
     args = shlex.split(mypy_args or "")
     with ignore_file.open("r") as file:
         all_ignored_files = {line.strip() for line in file.readlines()}
@@ -135,6 +136,7 @@ def check(
             try:
                 filename, api_result = future.result()
                 result, _, exit_code = api_result
+                print(f"filename: {filename}, result: {result}, exit_code: {exit_code}")
                 processedFiles.add(filename)
                 if exit_code != 0:
                     for line in result.split("\n"):
@@ -157,12 +159,13 @@ def check(
     ignored_files = all_ignored_files - files_to_remove
 
     modify_ignored_files = all_ignored_files > ignored_files
-
+    print("Modifying ignored files ? : ", modify_ignored_files)
     if modify_ignored_files and len(ignored_files) != 0:
         echo(f"{ignore_file} has been updated.")
         with ignore_file.open("w") as file:
             echo("\n".join(sorted(ignored_files)), file=file)
 
+    print(output)
     for line in output:
         echo(line)
 

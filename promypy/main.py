@@ -138,6 +138,10 @@ def check(
                 result, _, exit_code = api_result
                 print(f"filename: {filename}, result: {result}, exit_code: {exit_code}")
                 processedFiles.add(filename)
+                if exit_code == 2:
+                    output.append(f"Error in file: {filename}")
+                    files_with_error.add(filename)
+                    print(result)
                 if exit_code != 0:
                     for line in result.split("\n"):
                         match = re.match(FILE_PATTERN, line)

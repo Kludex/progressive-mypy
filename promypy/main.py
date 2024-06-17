@@ -112,6 +112,8 @@ def check(
     """
     print("Inside check")
     args = shlex.split(mypy_args or "")
+    print(args, timeout)
+    print("ignore_file: ", ignore_file)
     with ignore_file.open("r") as file:
         all_ignored_files = {line.strip() for line in file.readlines()}
     files_to_ignore = set(files) & all_ignored_files
@@ -136,7 +138,9 @@ def check(
             try:
                 filename, api_result = future.result()
                 result, _, exit_code = api_result
-                print(f"filename: {filename}, result: {result}, exit_code: {exit_code}")
+                print(
+                    f"filename: {filename}, result: {api_result}, exit_code: {exit_code}"
+                )
                 processedFiles.add(filename)
                 if exit_code == 2:
                     output.append(f"Error in file: {filename}")

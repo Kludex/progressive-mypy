@@ -142,6 +142,7 @@ def check(
                     print(
                         "promypy failed with exit status code 2. Please raise this issue with the developer."
                     )
+                    print("Error in file: ", api_result)
                 if exit_code != 0:
                     for line in result.split("\n"):
                         match = re.match(FILE_PATTERN, line)

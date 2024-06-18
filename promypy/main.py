@@ -110,10 +110,7 @@ def check(
     - If a file is not in the list, and is fully annotated, it will be ignored.
     - If a file is not in the list, and is not fully annotated, it will raise errors.
     """
-    print("Inside check")
     args = shlex.split(mypy_args or "")
-    print(args, timeout)
-    print("ignore_file: ", ignore_file)
     with ignore_file.open("r") as file:
         all_ignored_files = {line.strip() for line in file.readlines()}
     files_to_ignore = set(files) & all_ignored_files
@@ -138,14 +135,13 @@ def check(
             try:
                 filename, api_result = future.result()
                 result, _, exit_code = api_result
-                print(
-                    f"filename: {filename}, result: {api_result}, exit_code: {exit_code}"
-                )
                 processedFiles.add(filename)
                 if exit_code == 2:
                     output.append(f"Error in file: {filename}")
                     files_with_error.add(filename)
-                    print(result)
+                    print(
+                        "promypy failed with exit status code 2. Please raise this issue with the developer."
+                    )
                 if exit_code != 0:
                     for line in result.split("\n"):
                         match = re.match(FILE_PATTERN, line)
@@ -167,13 +163,11 @@ def check(
     ignored_files = all_ignored_files - files_to_remove
 
     modify_ignored_files = all_ignored_files > ignored_files
-    print("Modifying ignored files ? : ", modify_ignored_files)
     if modify_ignored_files and len(ignored_files) != 0:
         echo(f"{ignore_file} has been updated.")
         with ignore_file.open("w") as file:
             echo("\n".join(sorted(ignored_files)), file=file)
 
-    print(output)
     for line in output:
         echo(line)
 

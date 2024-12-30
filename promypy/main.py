@@ -50,7 +50,7 @@ def dump(
     exclude = exclude or []
     filenames: List[str] = []
     bad_filenames: Set[str] = set()
-    processedFiles = set()
+    processed_files = set()
     args = shlex.split(mypy_args or "")
     if directory == ".":
         directory = os.getcwd()  # pragma: no cover

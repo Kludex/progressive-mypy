@@ -6,7 +6,7 @@ from concurrent.futures import TimeoutError, as_completed
 from contextlib import ExitStack
 from glob import glob
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Any, List, Optional, Set, Tuple
 
 import typer
 from mypy import api
@@ -34,11 +34,15 @@ def write_to_file(file: Optional[str], filenames: Set[str]) -> None:
         echo(output_filenames, file=fh)
 
 
+def call_mypy_api(args: list[str]) -> Tuple[str, Any]:
+    return args[0], api.run([*args])
+
+
 @app.command()
 def dump(
     directory: str = ".",
     mypy_args: Optional[str] = None,
-    timeout: int = 10,
+    timeout: int = 30,
     exclude: Optional[List[str]] = None,
     output: Optional[str] = None,
 ) -> None:
@@ -46,6 +50,7 @@ def dump(
     exclude = exclude or []
     filenames: List[str] = []
     bad_filenames: Set[str] = set()
+    processed_files = set()
     args = shlex.split(mypy_args or "")
     if directory == ".":
         directory = os.getcwd()  # pragma: no cover
@@ -66,22 +71,26 @@ def dump(
         task = progress.add_task("Running mypy...", total=total)
 
         futures = [
-            pool.submit(api.run, timeout=timeout, args=[filename, *args])
+            pool.submit(call_mypy_api, timeout=timeout, args=[filename, *args])
             for filename in filenames
         ]
-
-        for filename, future in zip(filenames, as_completed(futures)):
-            include_filename = True
+        for future in as_completed(futures):
             try:
-                _, _, exit_code = future.result()
+                filename, api_result = future.result()
+                _, _, exit_code = api_result
                 include_filename = bool(exit_code)
+                processedFiles.add(filename)
             except TimeoutError:  # pragma: no cover
-                progress.console.print("TimeoutError: ", filename)
+                progress.console.print("TimeoutError")
+                include_filename = True
             except Exception as e:  # pragma: no cover
                 progress.console.print("Exception: ", e)
             if include_filename:
                 bad_filenames.add(filename)
             progress.advance(task)
+        files_resulted_in_exception = set(filenames) - processedFiles
+        if files_resulted_in_exception:
+            echo(f"Exception files : {set(filenames) - processedFiles}")
 
     write_to_file(output, bad_filenames)
 
@@ -91,6 +100,7 @@ def check(
     files: List[str],
     ignore_file: Path = typer.Option(..., "--ignore-file", "-f"),
     mypy_args: Optional[str] = None,
+    timeout: Optional[int] = 40,
 ) -> None:
     """Check the given files with mypy, applying a set of custom rules.
 
@@ -100,29 +110,60 @@ def check(
     - If a file is not in the list, and is fully annotated, it will be ignored.
     - If a file is not in the list, and is not fully annotated, it will raise errors.
     """
+    args = shlex.split(mypy_args or "")
     with ignore_file.open("r") as file:
         all_ignored_files = {line.strip() for line in file.readlines()}
     files_to_ignore = set(files) & all_ignored_files
 
     files_with_error = set()
-    args = shlex.split(mypy_args or "")
-    result, _, exit_code = api.run(files + args)
+    processedFiles = set()
 
-    output = []
-    if exit_code != 0:
-        for line in result.split("\n"):
-            match = re.match(FILE_PATTERN, line)
-            if ":" in line and match:
-                filename = match.group(1)
-                files_with_error.add(filename)
-                if filename not in files_to_ignore:
-                    output.append(line)
+    with Progress(
+        *Progress.get_default_columns(),
+        TimeElapsedColumn(),
+        MofNCompleteColumn(),
+    ) as progress, ProcessPool() as pool:
+        total = len(files)
+        task = progress.add_task("Checking mypy on files...", total=total)
+        futures = [
+            pool.submit(call_mypy_api, args=[filename, *args], timeout=timeout)
+            for filename in files
+        ]
+
+        output = []
+        for future in as_completed(futures):
+            try:
+                filename, api_result = future.result()
+                result, _, exit_code = api_result
+                processedFiles.add(filename)
+                if exit_code == 2:
+                    output.append(f"Error in file: {filename}")
+                    files_with_error.add(filename)
+                    print(
+                        "promypy failed with exit status code 2. Please raise this issue with the developer."
+                    )
+                    print("Error details: ", api_result)
+                if exit_code != 0:
+                    for line in result.split("\n"):
+                        match = re.match(FILE_PATTERN, line)
+                        if ":" in line and match:
+                            filename = match.group(1)
+                            files_with_error.add(filename)
+                            if filename not in files_to_ignore:
+                                output.append(line)
+            except TimeoutError:  # pragma: no cover
+                progress.console.print("TimeoutError")
+            except Exception as e:  # pragma: no cover
+                progress.console.print("Exception: ", e)
+            progress.advance(task)
+        files_resulted_in_exception = set(files) - processedFiles
+        if files_resulted_in_exception:
+            echo(f"Exception files : {set(files) - processedFiles}")
 
     files_to_remove = files_to_ignore - files_with_error
     ignored_files = all_ignored_files - files_to_remove
 
     modify_ignored_files = all_ignored_files > ignored_files
-
     if modify_ignored_files and len(ignored_files) != 0:
         echo(f"{ignore_file} has been updated.")
         with ignore_file.open("w") as file:
